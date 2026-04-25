@@ -1,0 +1,101 @@
+# ============================================================
+# RISK LIMITS — THE CONSTITUTION OF THIS STRATEGY
+# ============================================================
+# These are HARD limits. The code enforces them mechanically.
+# Do NOT loosen these without 6+ months of live data showing
+# edge preservation. Tighten liberally, loosen never.
+# ============================================================
+
+portfolio_risk:
+  # ── Capital Limits ──────────────────────────────────────
+  max_total_capital_at_risk_pct: 0.02      # Max 2% of portfolio in live risk
+  max_per_trade_capital_pct: 0.005         # Max 0.5% per individual trade
+  max_concurrent_positions: 3              # Never hold more than 3 simultaneous
+
+  # ── Daily P&L Limits ────────────────────────────────────
+  daily_loss_limit_pct: 0.01               # -1% daily: FULL STOP, kill switch
+  daily_profit_target_pct: 0.03            # +3% daily: Stop taking new trades
+  trailing_drawdown_from_peak_pct: 0.015   # -1.5% from daily peak: stop trading
+
+  # ── Weekly/Monthly Limits ───────────────────────────────
+  weekly_loss_limit_pct: 0.03              # -3% weekly: halt for review
+  monthly_loss_limit_pct: 0.07            # -7% monthly: strategy review required
+
+greeks_limits:
+  # ── Portfolio Greeks Budget ─────────────────────────────
+  # These are TOTAL portfolio limits across all open positions
+
+  # Delta — directional exposure
+  max_portfolio_delta: 50          # Equivalent to 50 shares of SPY
+  delta_hedge_threshold: 15        # Hedge when |delta| > 15
+  delta_hedge_frequency_seconds: 60  # Check delta every 60 seconds
+
+  # Gamma — second-order delta risk (most dangerous in 0DTE)
+  max_portfolio_gamma: 200         # CRITICAL: gamma explodes near expiry
+  gamma_warning_threshold: 150     # Alert at 150
+  gamma_emergency_threshold: 250   # Emergency position reduction
+
+  # Theta — time decay (your friend in short strategies)
+  min_portfolio_theta: -500        # Don't be too short theta (whipsaw risk)
+  max_portfolio_theta: 2000        # Don't be too long theta (pin risk)
+
+  # Vega — volatility exposure
+  max_portfolio_vega: 1000         # Max $1000 per 1% vol move
+  max_position_vega: 400           # Single position vega cap
+
+  # Charm (dDelta/dTime) — gamma risk near expiry
+  # 0DTE specific: charm accelerates massively in final 2 hours
+  max_portfolio_charm: 50          # Reduce positions if charm exceeds this
+
+  # Vanna (dDelta/dVol) — vol-correlated delta risk
+  max_portfolio_vanna: 200
+
+per_trade_risk:
+  # ── Entry Filters ────────────────────────────────────────
+  min_edge_bps: 3                  # Minimum expected edge in basis points
+  min_signal_confidence: 0.70      # Min composite signal score
+  max_iv_rank: 85                  # Don't buy options when IV rank > 85
+  min_iv_rank: 20                  # Don't sell options when IV rank < 20
+
+  # ── Stop Loss Rules ──────────────────────────────────────
+  max_loss_per_trade_pct: 1.0      # 100% of premium paid (debit spreads)
+  stop_loss_trigger_pct: 0.50      # Exit at 50% loss of premium
+  trailing_stop_from_peak_pct: 0.30  # Trail 30% from position peak
+
+  # ── Profit Taking ────────────────────────────────────────
+  profit_target_pct: 0.50          # Take 50% profit on debit spreads
+  scale_out_at_pct: [0.35, 0.50]   # Scale: sell 50% at 35%, rest at 50%
+
+circuit_breakers:
+  # ── Market-Wide Triggers ─────────────────────────────────
+  vix_halt_threshold: 35           # If VIX > 35: no new positions
+  vix_liquidate_threshold: 45      # If VIX > 45: liquidate all, halt
+  spy_gap_pct: 0.02                # If SPY gaps >2% on open: halt 30 min
+  market_halt_detection: true      # Auto-detect circuit breaker halts
+
+  # ── Strategy-Specific Triggers ──────────────────────────
+  consecutive_losses_halt: 3       # Halt after 3 consecutive losers
+  max_slippage_per_day_bps: 10     # Halt if avg slippage > 10bps today
+  fill_rejection_rate_halt: 0.20   # Halt if >20% of orders rejected
+
+  # ── System Health Triggers ──────────────────────────────
+  max_latency_ms: 500              # Halt if execution latency > 500ms
+  data_staleness_seconds: 5        # Halt if market data > 5s old
+  max_api_error_rate: 0.05         # Halt if >5% of API calls fail
+
+  # ── Recovery Rules ───────────────────────────────────────
+  cooldown_after_halt_minutes: 30  # Wait 30 min before resuming
+  manual_override_required: true   # Require human confirmation to resume
+  resume_only_after_review: true   # Must review logs before resuming
+
+execution_risk:
+  # ── Order Safety ────────────────────────────────────────
+  max_order_size_contracts: 10     # Hard cap per single order
+  price_sanity_check_pct: 0.15    # Reject if price > 15% from model
+  duplicate_order_check: true      # Prevent duplicate order submission
+  fat_finger_protection: true      # Block orders >5x average size
+
+  # ── Liquidity Guards ─────────────────────────────────────
+  min_volume_for_entry: 100        # Min option volume before entering
+  max_pct_of_adv: 0.10            # Max 10% of average daily volume
+  min_bid_size: 10                 # Min bid size (contracts)
