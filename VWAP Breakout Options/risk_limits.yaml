@@ -1,0 +1,107 @@
+# ============================================================
+# VWAP Breakout Options — Risk Limits
+# ============================================================
+# These are HARD limits enforced mechanically.
+# The VWAP strategy allows slightly longer DTE than 0DTE,
+# so Greeks limits are calibrated accordingly.
+# ============================================================
+
+portfolio_risk:
+  # ── Capital Limits ──────────────────────────────────────
+  max_total_capital_at_risk_pct: 0.03     # Max 3% total at risk (longer DTE = more buffer)
+  max_per_trade_capital_pct: 0.007        # Max 0.7% per trade
+  max_concurrent_positions: 4            # Max 4 simultaneous (more than 0DTE strategy)
+
+  # ── Daily P&L Limits ────────────────────────────────────
+  daily_loss_limit_pct: 0.015            # -1.5% daily: kill switch
+  daily_profit_target_pct: 0.04          # +4% daily: stop new trades
+  trailing_drawdown_from_peak_pct: 0.02  # -2% from peak: pause
+
+  # ── Weekly/Monthly ───────────────────────────────────────
+  weekly_loss_limit_pct: 0.04
+  monthly_loss_limit_pct: 0.09
+
+greeks_limits:
+  # ── Portfolio Greeks Budget ─────────────────────────────
+  # VWAP strategy has longer DTE → less extreme gamma, more vega risk
+
+  max_portfolio_delta: 80              # Higher than 0DTE (longer DTE = more delta range)
+  delta_hedge_threshold: 25            # Hedge when |delta| > 25
+  delta_hedge_frequency_seconds: 120   # Recheck every 2 minutes
+
+  max_portfolio_gamma: 150             # Lower gamma risk than 0DTE
+  gamma_warning_threshold: 100
+  gamma_emergency_threshold: 200
+
+  min_portfolio_theta: -400
+  max_portfolio_theta: 1500
+
+  max_portfolio_vega: 1500             # Higher vega tolerance (multi-DTE)
+  max_position_vega: 600
+
+  max_portfolio_charm: 30              # Less critical than 0DTE (not same-day expiry)
+  max_portfolio_vanna: 300
+
+per_trade_risk:
+  # ── Entry Filters ────────────────────────────────────────
+  min_edge_bps: 4                      # Minimum expected edge after costs
+  min_signal_confidence: 0.68
+
+  # VWAP-specific IV rank filters
+  # VWAP breaks in low-IV environments are often stronger (less noisy)
+  max_iv_rank_for_debit: 70            # Don't buy debit spreads in high IV
+  min_iv_rank_for_credit: 30           # Don't sell premium in low IV
+
+  # ── Stop Loss — VWAP-Specific ───────────────────────────
+  # Key invalidation: price closes BACK through VWAP on strong volume
+  # This is the primary stop signal, not just price percentage
+
+  stop_loss_trigger_pct: 0.45          # Exit at 45% loss of premium paid
+  vwap_recross_stop: true              # EXIT if price crosses back through VWAP with volume
+  vwap_recross_volume_threshold: 1.4   # Volume multiplier to confirm invalidation
+
+  trailing_stop_from_peak_pct: 0.35    # Trail 35% from peak
+
+  # ── Profit Taking ────────────────────────────────────────
+  profit_target_pct: 0.50              # 50% profit target
+  scale_out_at_pct: [0.30, 0.50]       # Scale: 50% at 30%, rest at 50%
+
+  # Time-based exit: if trade hasn't moved in N hours, exit
+  max_holding_hours: 6                 # Exit if no progress in 6 hours
+  eod_force_close: true                # Always close same-day before market close
+
+circuit_breakers:
+  # ── Market Triggers ──────────────────────────────────────
+  vix_halt_threshold: 30               # Slightly lower than 0DTE (more time to react)
+  vix_liquidate_threshold: 40
+  spy_gap_pct: 0.015                   # 1.5% gap triggers review
+  market_halt_detection: true
+
+  # ── VWAP Strategy-Specific Triggers ─────────────────────
+  consecutive_losses_halt: 4           # 4 consecutive losers → halt
+  max_slippage_per_day_bps: 12
+  fill_rejection_rate_halt: 0.20
+
+  # VWAP signal quality degradation
+  # If VWAP signals keep failing (price retraces through VWAP), strategy is misaligned
+  vwap_invalidation_rate_halt: 0.60    # If >60% of VWAP breaks get invalidated: halt
+  vwap_evaluation_window: 10           # Evaluate last N trades
+
+  # ── System Health ────────────────────────────────────────
+  max_latency_ms: 750                  # Slightly more tolerant (not pure 0DTE speed)
+  data_staleness_seconds: 10
+  max_api_error_rate: 0.05
+
+  # ── Recovery ─────────────────────────────────────────────
+  cooldown_after_halt_minutes: 45
+  manual_override_required: true
+  resume_only_after_review: true
+
+execution_risk:
+  max_order_size_contracts: 15
+  price_sanity_check_pct: 0.15
+  duplicate_order_check: true
+  fat_finger_protection: true
+  min_volume_for_entry: 200
+  max_pct_of_adv: 0.10
+  min_bid_size: 5
