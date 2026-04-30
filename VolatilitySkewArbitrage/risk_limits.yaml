@@ -1,0 +1,144 @@
+# ============================================================
+# Earnings Vol Skew Arb — Risk Limits
+# ============================================================
+# Earnings trades are fundamentally different from intraday:
+#
+#   1. OVERNIGHT RISK — Gaps cannot be stopped out in real-time
+#   2. EVENT RISK — Single binary event drives the P&L
+#   3. CORRELATED RISK — Many earnings happen in same 2-week window
+#   4. LIQUIDITY RISK — Bid-ask widens massively after earnings
+#
+# These limits reflect all four risks. They are MORE conservative
+# than intraday limits, not less, despite longer holding period.
+# ============================================================
+
+portfolio_risk:
+  # ── Capital Limits ──────────────────────────────────────
+  # We size smaller because gap risk = unhedgeable binary event
+  max_total_earnings_exposure_pct: 0.04    # Max 4% TOTAL at risk in earnings trades
+  max_per_trade_capital_pct: 0.010         # Max 1% per single earnings trade
+  max_concurrent_earnings_positions: 4    # Never hold >4 simultaneously
+
+  # CRITICAL: Sector concentration — earnings are correlated within sector
+  max_same_sector_positions: 2            # Max 2 tech, 2 financial, etc.
+  max_same_week_earnings: 3              # Max 3 trades in same reporting week
+
+  # ── Daily P&L Limits ────────────────────────────────────
+  # Note: These apply to the full portfolio, not just earnings trades
+  daily_loss_limit_pct: 0.020            # -2% total: full stop
+  daily_profit_target_pct: 0.05          # +5%: stop new trades
+  trailing_drawdown_from_peak_pct: 0.025 # -2.5% from peak: pause
+
+  # ── Per-Earnings-Cycle Limits ───────────────────────────
+  # Earnings season runs ~4 weeks per quarter
+  # Track performance across the season
+  season_loss_limit_pct: 0.06            # -6% in one earnings season: full review
+  season_win_rate_min: 0.45              # Below 45% win rate → strategy review
+
+greeks_limits:
+  # ── Portfolio Greeks Budget ─────────────────────────────
+  # Earnings trades have unique Greek profiles:
+  # - Short vega (selling IV) — primary risk on vega spike
+  # - Near-zero delta (condors/reversals are delta-neutral)
+  # - Negative gamma (short premium = negative gamma)
+
+  # Delta — earnings trades should be near-neutral
+  max_portfolio_delta: 60
+  delta_hedge_threshold: 20
+  delta_hedge_frequency_seconds: 300     # 5 min (less urgent than intraday)
+
+  # Gamma — critical: negative gamma means unlimited loss acceleration
+  max_portfolio_gamma: -500              # Net short gamma limit (absolute)
+  gamma_warning_threshold: -350
+  gamma_emergency_threshold: -700        # Emergency position reduction
+
+  # Vega — PRIMARY RISK for earnings vol trades
+  # We are SHORT vega (selling IV). A surprise vol spike is our main enemy.
+  max_portfolio_vega: -2000              # Max net short vega (absolute)
+  max_position_vega: -800               # Single position vega cap
+  vega_warning_threshold: -1500
+  vega_emergency_threshold: -2500       # Reduce positions immediately
+
+  # Theta — we want positive theta (time decay helps short premium)
+  min_portfolio_theta: 100              # Should always be theta-positive
+  max_portfolio_theta: 5000             # Don't get too theta-greedy
+
+  # Charm and Vanna — important for earnings (vol of vol is high)
+  max_portfolio_vanna: 500
+  max_portfolio_volga: 300              # Volga = vega convexity (vol of vol risk)
+
+per_trade_risk:
+  # ── Pre-Trade Filters ────────────────────────────────────
+  min_edge_bps: 5                        # Minimum net expected edge after costs
+  min_signal_confidence: 0.65
+  min_iv_rank: 60                        # Only trade when vol is actually elevated
+  min_iv_percentile: 65
+  min_earnings_history_cycles: 8        # Need 8+ prior earnings data points
+
+  # ── Gap Risk Controls ─────────────────────────────────────
+  # MOST CRITICAL for earnings. Gaps through wings = max loss.
+  min_wing_beyond_expected_move: 1.10   # Wings must be ≥ 1.1× expected move
+  max_acceptable_gap_history_pct: 0.15  # If >15% of hist earnings gapped beyond wings: skip
+  max_single_trade_wing_risk: 0.008     # Max 0.8% portfolio risk if wings breached
+
+  # ── Stop Loss Rules ──────────────────────────────────────
+  # Earnings-specific: main stop is PRE-EARNINGS unexpected events
+  intraday_stop_loss_pct: 0.50          # Exit if position loses 50% before earnings
+  post_earnings_max_loss_pct: 0.75      # Max loss post-earnings before forced close
+  emergency_gap_multiplier: 2.5         # If gap > 2.5× expected move: emergency close
+
+  # ── Profit Taking ────────────────────────────────────────
+  profit_target_pct: 0.50               # 50% of max profit: take it
+  post_earnings_profit_rush: true       # Immediately exit if profit target hit on open
+
+  # ── Time-Based Exits ────────────────────────────────────
+  max_days_in_trade: 7                  # Never hold more than 7 days
+  post_earnings_max_hold_hours: 3       # Close within 3 hours after open post-earnings
+
+circuit_breakers:
+  # ── Earnings-Season Specific Triggers ───────────────────
+  consecutive_losses_halt: 3            # 3 consecutive earnings losers → halt
+  season_loss_rate_halt: 0.65           # >65% loss rate this season → halt
+  vega_spike_halt_pct: 0.20            # If portfolio vega loss > 20% in one day: halt
+
+  # ── Market-Wide Triggers ─────────────────────────────────
+  vix_halt_threshold: 35               # VIX > 35: no new earnings trades
+  vix_liquidate_threshold: 45          # VIX > 45: liquidate all
+  market_wide_vol_spike: 0.25          # If VIX jumps > 25% intraday: halt
+
+  # ── Data Quality Triggers ───────────────────────────────
+  earnings_date_uncertainty_halt: true  # Halt if earnings date changes
+  iv_data_staleness_minutes: 15         # Halt if IV data > 15 min stale
+  max_api_error_rate: 0.05
+
+  # ── System Health ────────────────────────────────────────
+  max_latency_ms: 2000                 # More tolerant (not HFT speed required)
+  data_staleness_seconds: 60           # 1 minute tolerance for overnight data
+
+  # ── Recovery ─────────────────────────────────────────────
+  cooldown_after_halt_minutes: 60      # 1 hour cooldown after halt
+  manual_override_required: true
+  resume_only_after_review: true
+
+execution_risk:
+  max_order_size_contracts: 20         # Higher max (spreads have defined risk)
+  price_sanity_check_pct: 0.20         # Wider tolerance for complex spreads
+  duplicate_order_check: true
+  fat_finger_protection: true
+  min_volume_for_entry: 100
+  min_open_interest: 500
+  max_pct_of_adv: 0.08
+
+ticker_specific_overrides:
+  # High-risk tickers: tighter limits
+  TSLA:
+    max_per_trade_capital_pct: 0.005   # Half the normal limit
+    min_wing_beyond_expected_move: 1.25  # Much wider wings needed
+    min_iv_rank: 70
+  NVDA:
+    max_per_trade_capital_pct: 0.007
+    min_wing_beyond_expected_move: 1.20
+  # Conservative tickers: can be slightly more aggressive
+  JPM:
+    max_per_trade_capital_pct: 0.012
+    min_wing_beyond_expected_move: 1.05

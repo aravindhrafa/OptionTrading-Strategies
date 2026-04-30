@@ -1,0 +1,195 @@
+# ============================================================
+# Earnings Volatility Skew Arbitrage — Base Configuration
+# ============================================================
+# CAUTION: Earnings trading is HIGH RISK. These parameters are
+# conservative defaults. Tune ONLY after 2 full earnings seasons
+# of paper trading with documented, audited results.
+#
+# Key difference from intraday strategies:
+#   - Positions are held OVERNIGHT through the earnings event
+#   - Gap risk is UNHEDGEABLE — wings are your only protection
+#   - IV crush can be 40-70% in a single session
+# ============================================================
+
+strategy:
+  name: "Earnings_Volatility_Skew_Arb"
+  version: "1.0.0"
+  mode: "paper"       # ALWAYS start paper. Set "live" explicitly.
+
+  # Universe of eligible tickers for earnings plays
+  # These must have:
+  #   1. Active options chain with high OI
+  #   2. At least 8 historical earnings cycles in our database
+  #   3. Consistent IV crush history (crush > 30% in >70% of cycles)
+  universe:
+    liquid_large_cap:
+      - "AAPL"    # Extremely liquid, consistent ~45% crush
+      - "MSFT"    # Consistent ~40% crush, low gap risk
+      - "GOOGL"   # Large moves possible, high OI
+      - "AMZN"    # High IV, can have large gaps
+      - "META"    # Volatile, higher edge but higher risk
+      - "NVDA"    # Very high IV, large gaps common — caution
+      - "TSLA"    # Extremely volatile — advanced only
+    financials:
+      - "JPM"     # Conservative, low gap risk
+      - "GS"      # Moderate IV crush
+    etfs:
+      - "QQQ"     # Sector-level earnings play around tech season
+
+  # Earnings calendar settings
+  earnings:
+    min_days_before_entry: 1    # Enter at least 1 day before report
+    max_days_before_entry: 5    # Enter no more than 5 days before report
+    preferred_entry_days: 2     # Optimal: 2 days before (IV near peak)
+
+    # AMC = After Market Close (report tonight, gaps tomorrow morning)
+    # BMO = Before Market Open (report before open, gap at open)
+    allowed_timing: ["AMC", "BMO"]
+
+    # Date confirmation requirements
+    require_confirmed_date: true    # NEVER trade on estimated dates
+    min_date_confidence: 0.95       # 95% confidence in date source
+
+    # Exit rules post-earnings
+    post_earnings_exit_window_minutes: 30  # Close within 30 min of open
+    max_hold_post_earnings_hours: 2         # Never hold more than 2 hours after
+
+# ============================================================
+# SIGNAL PARAMETERS
+# ============================================================
+signals:
+  iv_skew:
+    # Put-Call skew analysis
+    delta_points: [10, 15, 20, 25, 30]   # Delta levels to analyze skew
+
+    # Skew richness thresholds
+    skew_richness_min: 0.08          # Min (25Δ Put IV - 25Δ Call IV) / ATM IV
+    skew_richness_extreme: 0.20      # Extreme skew → risk reversal opportunity
+    risk_reversal_threshold: 0.18    # Risk reversal trade trigger
+
+    # Lookback for skew baseline (how many prior earnings)
+    skew_baseline_lookback: 8        # Use 8 prior earnings cycles
+
+    # Minimum IV levels
+    min_atm_iv: 0.25                 # ATM IV must be > 25% to trade
+    min_iv_rank: 60                  # IV Rank must be > 60% (rich vol)
+    min_iv_percentile: 70            # IV Percentile > 70th
+
+  term_structure:
+    # Front-month vs back-month analysis
+    front_month_max_dte: 7           # "Earnings expiry" = ≤7 DTE
+    back_month_target_dte_range: [21, 45]  # "Normal" back month range
+
+    # Earnings bump = extra IV premium on front month vs back month
+    # This is what collapses post-earnings
+    min_earnings_bump_pct: 0.15     # Front month must be ≥15% richer than back
+    max_calendar_spread_risk: 0.03  # Max 3% of portfolio in calendar spreads
+
+    # Term structure shape classification
+    # Normal: IV increases with DTE (upward sloping)
+    # Inverted: Front month > back month (earnings bump creates inversion)
+    inverted_required: true         # Require inverted term structure for entry
+
+  historical_iv:
+    # Historical IV crush database parameters
+    min_earnings_history: 8         # Need at least 8 prior earnings
+    crush_consistency_min: 0.65     # Crush > 30% in ≥65% of prior earnings
+    median_crush_threshold: 0.30    # Median crush magnitude must be ≥30%
+
+    # Expected move analysis
+    # Options EM = (ATM Call + ATM Put) × 0.85 (straddle approximation)
+    # Historical EM = median actual move over last 8 earnings
+    em_overpriced_threshold: 1.20   # Options EM > 1.2× historical EM = rich
+
+    # Realized vol comparison
+    rv_iv_ratio_min: 0.70           # IV should be ≥ 1.4× RV (30d) to sell
+
+  options_flow:
+    # Smart money options flow detection
+    min_block_trade: 200000         # $200K+ single trade = institutional
+    min_sweep_premium: 100000       # $100K+ sweep = informed buying
+    flow_window_hours: 48           # Look at last 48 hours of flow
+
+    # Bearish/bullish flow thresholds
+    # Smart money SELLING vol (good for us): both calls and puts being sold
+    # Smart money BUYING vol (bad for us): avoid if institutions are buying vol
+    vol_selling_confirmation: true  # Confirm smart money is selling vol too
+
+  composite:
+    # Signal weights (must sum to 1.0)
+    iv_skew_weight: 0.40
+    term_structure_weight: 0.25
+    historical_iv_weight: 0.25
+    options_flow_weight: 0.10
+
+    # Minimum composite score to enter
+    min_composite_score: 0.65
+
+    # Direction confidence threshold for directional trades (risk reversals)
+    min_directional_confidence: 0.72
+
+# ============================================================
+# TRADE STRUCTURE SELECTION
+# ============================================================
+trade_structure:
+  # Structure selection rules (evaluated in priority order)
+  # 1. Extreme skew + high flow: risk_reversal
+  # 2. Standard rich vol + flat EM: iron_condor
+  # 3. Steep term structure: calendar_spread
+  # 4. Strong directional signal: debit_spread
+
+  iron_condor:
+    # Wing placement: beyond expected move × safety multiplier
+    wing_multiplier: 1.20          # Wings at 1.2× expected move (safety buffer)
+    min_wing_multiplier: 1.10      # Never go below 1.1× — gap risk too high
+    width_pct_of_stock: 0.02       # Spread width = 2% of stock price
+    max_credit_to_risk_ratio: 0.33 # Collect ≥33% of width (min edge)
+
+  risk_reversal:
+    # Buy call, sell put (or sell call, buy put)
+    call_delta: 0.25               # Buy 25Δ call (cheap IV side)
+    put_delta: 0.25                # Sell 25Δ put (expensive IV side)
+    max_net_delta: 0.15            # Net delta after setup
+
+  calendar_spread:
+    short_leg_dte_max: 7           # Sell front-month (earnings expiry)
+    long_leg_dte_target: 30        # Buy back-month (normal IV)
+    max_vega_ratio: 1.3            # Long vega shouldn't exceed short by >30%
+
+  debit_spread:
+    target_delta: 0.35             # Near-ATM for directional plays
+    spread_width_pct: 0.005        # 0.5% of stock price
+
+  # Universal settings
+  min_open_interest: 500           # Liquidity minimum
+  max_bid_ask_spread_pct: 0.07     # 7% bid-ask max (wider for earnings)
+  preferred_expiry_offset: 0       # Use earnings-week expiry
+
+# ============================================================
+# EXECUTION — Earnings-Specific
+# ============================================================
+execution:
+  order_type: "limit"
+  limit_offset_bps: 0.5
+  max_aggression_bps: 3.0          # Slightly more aggressive (earnings are time-sensitive)
+  retry_interval_seconds: 8
+  max_retries: 4
+  cancel_unfilled_after: 60        # Give more time — these are complex spreads
+
+  # Post-earnings specific
+  post_earnings_order_type: "limit"
+  post_earnings_max_aggression_bps: 5.0   # More aggressive on exit (IV crush = rush to exit)
+  post_earnings_cancel_after: 120          # 2 min max to fill on exit
+
+# ============================================================
+# LOGGING
+# ============================================================
+logging:
+  level: "INFO"
+  structured: true
+  log_dir: "logs/"
+  metrics_port: 9092
+  alert_webhook: ""
+  # Earnings-specific: always alert before and after earnings
+  pre_earnings_alert: true
+  post_earnings_alert: true
