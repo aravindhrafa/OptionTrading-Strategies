@@ -1,0 +1,203 @@
+# ============================================================
+# Expiry Pin Risk Reversal — Base Configuration
+# ============================================================
+# This strategy exploits TWO phenomena simultaneously:
+#   1. Max pain / gamma pinning near expiry
+#   2. Put-call IV skew distortion near expiry
+#
+# These parameters are calibrated conservatively. Tune ONLY
+# after 60+ paper sessions with documented edge.
+#
+# EXPIRY DAY RULES (hardcoded into the engine, not configurable):
+#   - No new entries after 2:00 PM on expiry day
+#   - Mandatory 50% reduction at T-120 min before close
+#   - Mandatory FULL CLOSE at T-60 min before close
+#   - These rules are NON-NEGOTIABLE and cannot be disabled
+# ============================================================
+
+strategy:
+  name: "Expiry_Pin_Risk_Reversal"
+  version: "1.0.0"
+  mode: "paper"   # Always start paper. Set "live" explicitly.
+
+  # Tradeable universe
+  # IMPORTANT: These tickers must have:
+  #   1. Weekly options (not just monthly)
+  #   2. OI > 50,000 across chain (for meaningful max pain signal)
+  #   3. Documented pin history in our database
+  universe:
+    indices_etfs:           # Strongest pin signals (massive OI)
+      - "SPY"               # Strongest and most consistent pinner
+      - "QQQ"               # Strong pinner, tech-heavy
+      - "IWM"               # Russell 2000 — decent pinner
+      - "SPX"               # Cash-settled (no assignment risk) — preferred
+    large_cap_pinners:      # Individual stocks with strong pin history
+      - "AAPL"
+      - "MSFT"
+      - "AMZN"
+      - "NVDA"
+      - "TSLA"              # High volatility — smaller size only
+
+  # Expiry cycle targeting
+  expiry:
+    # DTE range for new entries
+    min_dte: 0              # Can enter on expiry day (0DTE)
+    max_dte: 5              # Max 5 days before expiry
+    preferred_dte: 2        # Optimal: 2 days before expiry
+    avoid_dte: [4, 5]       # Early in cycle — pin effect too weak for full size
+
+    # Expiry day special rules (MANDATORY — cannot be disabled)
+    expiry_day_entry_cutoff: "14:00"   # No new entries after 2:00 PM on expiry day
+    expiry_day_reduce_at_minutes: 120   # Reduce 50% at T-120 min before close
+    expiry_day_close_all_minutes: 60    # CLOSE ALL at T-60 min before close
+    hard_close_time: "15:00"           # Hard close regardless of DTE
+
+    # Weekend rule
+    never_hold_over_weekend: true      # Always close before Friday 2:00 PM if not expiry
+
+    # Avoid these expiry types (too unpredictable)
+    avoid_monthly_quad_witching: false  # Actually good for pinning — leave enabled
+    avoid_spx_am_settlement: true       # SPX AM-settled options complex — avoid
+
+  session:
+    entry_start: "10:00"    # Skip first 30 min (wild OI/price fluctuation)
+    entry_cutoff: "14:00"   # No new entries after 2:00 PM
+    hard_close_all: "15:00" # Force close 1 hour before close
+    timezone: "America/New_York"
+
+    # Event blackouts
+    news_blackout_minutes: 45
+    avoid_events:
+      - "FOMC"
+      - "CPI"
+      - "NFP"
+      - "PCE"
+      # On these days, pin effect is overwhelmed by event-driven vol
+
+# ============================================================
+# SIGNAL PARAMETERS
+# ============================================================
+signals:
+  max_pain:
+    # Max pain calculation
+    include_strike_range_pct: 0.15    # Include strikes within ±15% of current price
+    min_oi_per_strike: 100            # Ignore strikes with OI < 100 (illiquid)
+    recalculate_interval_minutes: 15  # How often to recalculate on expiry day
+    use_weighted_max_pain: true       # Weight by OI × bid × open interest (more accurate)
+
+    # Pin signal thresholds
+    max_pain_distance_entry_pct: 0.03     # Only trade if within 3% of max pain
+    strong_pin_distance_pct: 0.005        # < 0.5% = very strong pin setup
+    moderate_pin_distance_pct: 0.015      # 0.5-1.5% = moderate pin setup
+    weak_pin_distance_pct: 0.030          # 1.5-3.0% = weak — reduced size
+
+    # Max pain stability (shifting max pain = unreliable signal)
+    max_pain_shift_alert_pct: 0.005       # Alert if max pain shifts > 0.5%
+    max_pain_shift_abort_pct: 0.010       # Abort trade if max pain shifts > 1%
+
+    # Historical pin accuracy filter
+    min_historical_pin_accuracy: 0.55     # Ticker must pin > 55% of expirations
+    pin_accuracy_window: 52               # Evaluate last 52 expiry cycles
+
+  pin_gravity:
+    # Gravity score components
+    oi_concentration_weight: 0.40     # OI concentration near max pain (40% of score)
+    gex_alignment_weight: 0.30        # GEX confirms pin direction (30%)
+    price_momentum_weight: 0.15       # Price moving toward pin (15%)
+    term_structure_weight: 0.15       # IV supports pin scenario (15%)
+
+    # OI concentration scoring
+    oi_at_max_pain_threshold_pct: 0.25  # If >25% of all OI at max pain strike → strong
+
+    # Minimum gravity score to trade
+    min_gravity_score: 0.60
+
+  iv_skew_near_expiry:
+    # Near-expiry put/call IV distortion
+    min_put_overpricing_pct: 0.08     # Puts must be ≥8% richer than fair skew
+    strong_put_overpricing_pct: 0.18  # ≥18% = strong risk reversal signal
+    risk_reversal_threshold_25d: 0.12 # 25Δ RR > 12% = skew arb entry
+
+    # IV rank minimum (need elevated vol to sell)
+    min_iv_rank: 40                   # Lower than earnings (pin works in moderate vol)
+    min_iv_percentile: 45
+
+    # Skew slope analysis
+    # Measures how rapidly IV increases as you go further OTM on the put side
+    steep_skew_threshold: 0.30       # IV increases > 30% per 10-delta step = steep
+
+  gex_pin:
+    # GEX confirmation of pin direction
+    min_gex_for_pin_confirmation: 200_000_000   # $200M+ positive GEX = dealers long gamma → pin
+    negative_gex_abort: -100_000_000             # Negative GEX > $100M → abort (dealers short, amplifies moves)
+    gex_flip_proximity_bps: 10                   # If within 10bps of GEX flip → abort
+
+  composite:
+    # Signal component weights
+    max_pain_weight: 0.40             # Max pain is the core signal
+    pin_gravity_weight: 0.25          # Gravity confirms strength
+    iv_skew_weight: 0.25              # Skew provides the monetization edge
+    gex_weight: 0.10                  # GEX is confirmation layer
+
+    # Entry thresholds
+    min_composite_score: 0.68         # Minimum to enter any trade
+    strong_signal_threshold: 0.82     # Above this: full size + tighter targets
+
+# ============================================================
+# TRADE STRUCTURE
+# ============================================================
+trade_structure:
+  # Structure selection by setup type
+  bullish_pin: "risk_reversal_bull"   # Price below max pain
+  bearish_pin: "risk_reversal_bear"   # Price above max pain
+  neutral_pin: "pin_condor"           # Price at max pain ± 0.3%
+
+  risk_reversal:
+    # Strike selection
+    call_delta: 0.25                  # Buy 25Δ call near max pain
+    put_delta: 0.25                   # Sell 25Δ put (overpriced)
+    max_net_premium_debit: 0.50       # Max net debit: $0.50 per share
+    # If net debit > $0.50, the put isn't rich enough → skip
+
+    # Risk reversal exit
+    close_at_profit_pct: 0.50         # Close at 50% of max theoretical gain
+    scale_out_pct: 0.35               # Scale 50% at 35% gain first
+
+  pin_condor:
+    spread_width_pct: 0.005           # 0.5% of stock price per spread wing
+    wing_offset_from_max_pain_pct: 0.008   # Sell strikes 0.8% from max pain
+    max_credit_to_risk_ratio: 0.30    # Collect ≥30% of width
+
+  # Universal
+  min_open_interest_at_strike: 500
+  max_bid_ask_spread_pct: 0.06        # 6% max on near-expiry options
+  max_dte_for_condor: 2              # Only use condor within 2 DTE
+
+# ============================================================
+# EXECUTION
+# ============================================================
+execution:
+  order_type: "limit"
+  limit_offset_bps: 0.3             # Start very close to mid (near-expiry options move fast)
+  max_aggression_bps: 2.0
+  retry_interval_seconds: 4          # Quick retries (time-sensitive)
+  max_retries: 3
+  cancel_unfilled_after: 20          # 20 seconds max (near-expiry moves fast)
+
+  # Expiry-day specific
+  expiry_day_limit_offset_bps: 0.5  # Slightly more aggressive on expiry day
+  expiry_day_max_aggression_bps: 3.0
+
+# ============================================================
+# LOGGING
+# ============================================================
+logging:
+  level: "INFO"
+  structured: true
+  log_dir: "logs/"
+  metrics_port: 9093
+  alert_webhook: ""
+  # Pin-specific alerts
+  max_pain_shift_alert: true
+  assignment_risk_alert: true
+  gamma_budget_alert: true

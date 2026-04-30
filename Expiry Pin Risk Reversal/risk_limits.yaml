@@ -1,0 +1,165 @@
+# ============================================================
+# Expiry Pin Risk Reversal — Risk Limits
+# ============================================================
+# Pin risk reversals carry UNIQUE risks vs standard options:
+#
+#  1. SHORT PUT RISK: The short put leg has UNLIMITED downside
+#     below the strike. This is the single most dangerous risk.
+#
+#  2. GAMMA SPIKE: Near expiry, gamma causes violent repricing.
+#     Even small price moves can cause catastrophic P&L swings.
+#
+#  3. ASSIGNMENT: In-the-money short options can be assigned
+#     at any time (American-style). Always monitor ITM status.
+#
+#  4. PIN FAILURE: If max pain thesis is wrong, losses accelerate
+#     because both legs move against you simultaneously.
+#
+# These limits are designed to survive ALL four risks simultaneously.
+# ============================================================
+
+portfolio_risk:
+  # ── Capital Limits ──────────────────────────────────────
+  max_total_capital_at_risk_pct: 0.030    # Max 3% of portfolio at risk
+  max_per_trade_capital_pct: 0.008        # Max 0.8% per single pin trade
+  max_concurrent_positions: 4             # Max 4 simultaneous pin trades
+
+  # Ticker concentration (avoid too many correlated pinners)
+  max_correlated_positions: 2             # SPY + QQQ = 1 too many
+  max_same_expiry_positions: 3            # Max 3 positions expiring same day
+
+  # ── Daily P&L ───────────────────────────────────────────
+  daily_loss_limit_pct: 0.015            # -1.5%: kill switch
+  daily_profit_target_pct: 0.04          # +4%: stop new trades
+  trailing_drawdown_from_peak_pct: 0.020 # -2% from peak: pause
+
+  # Expiry-day limits (tighter due to gamma risk)
+  expiry_day_loss_limit_pct: 0.010       # Tighter on expiry day: -1.0%
+  expiry_day_max_new_positions: 2        # Max 2 NEW positions on expiry day
+
+greeks_limits:
+  # ── Portfolio Greeks Budget ─────────────────────────────
+  # Risk reversal Greeks profile:
+  #   - Net delta: slightly long/short depending on direction
+  #   - Net gamma: near-zero but can flip rapidly near expiry
+  #   - Net theta: positive (time decay helps both legs)
+  #   - Net vega: near-zero (long and short vega partially offset)
+
+  max_portfolio_delta: 60
+  delta_hedge_threshold: 20
+  delta_hedge_frequency_seconds: 90      # Frequent hedging near expiry
+
+  # GAMMA — THE MOST CRITICAL LIMIT FOR THIS STRATEGY
+  # Short gamma = unlimited acceleration of losses as price moves away from pin
+  # We run near-zero gamma by design, but must enforce hard limits
+  max_portfolio_gamma: 200               # Long gamma budget
+  min_portfolio_gamma: -200              # Short gamma budget (HARD LIMIT)
+  gamma_warning_threshold: 150           # Start reducing at this level
+  gamma_emergency_threshold: 250         # Emergency position reduction
+
+  # Expiry-day gamma tightening (gamma explodes near expiry)
+  expiry_day_max_gamma: 100             # Half the normal limit on expiry day
+  expiry_day_min_gamma: -100            # Tighter short gamma limit on expiry day
+
+  # Theta — should be positive (we collect premium on net basis)
+  min_portfolio_theta: 50               # Always theta-positive
+  max_portfolio_theta: 3000
+
+  # Vega — near-neutral for risk reversal (both legs partially offset)
+  max_portfolio_vega: 800
+  min_portfolio_vega: -800
+
+  # Charm (dDelta/dTime) — CRITICAL near expiry
+  # Charm causes delta to change rapidly as time passes
+  # Near 0DTE, charm can be extreme — must monitor closely
+  max_portfolio_charm: 40
+  min_portfolio_charm: -40
+
+  # Vanna (dDelta/dVol) — important when vol moves
+  max_portfolio_vanna: 250
+  min_portfolio_vanna: -250
+
+  # Speed (dGamma/dS) — 3rd order, monitor near expiry only
+  monitor_speed_when_dte_below: 1       # Only monitor on 0DTE
+
+per_trade_risk:
+  # ── Entry Filters ────────────────────────────────────────
+  min_edge_bps: 4
+  min_signal_confidence: 0.68
+  min_iv_rank: 40                       # Lower than earnings strategy
+  min_pin_accuracy_history: 0.55        # Historical pin rate for this ticker
+  min_historical_expirations: 26        # Need 26+ weeks of pin history (6 months)
+
+  # ── Pin-Specific Filters ─────────────────────────────────
+  max_distance_from_max_pain_pct: 0.03  # Never enter if > 3% from max pain
+  min_oi_at_max_pain_strike: 500        # OI at max pain strike must be ≥ 500
+  gex_must_support_pin: true            # GEX must confirm pin direction
+
+  # ── Stop Loss — Pin-Specific ─────────────────────────────
+  stop_loss_pct: 0.50                   # 50% of max risk: exit
+  max_pain_break_stop: true             # Exit if price breaks away from max pain zone
+  max_pain_break_threshold_pct: 0.015   # "Away from max pain" = 1.5% distance
+  # This is the primary stop: if pin is breaking down, get out
+
+  # Short put specific stop
+  short_put_itm_alert_pct: 0.002        # Alert when short put is 0.2% ITM
+  short_put_itm_close_pct: 0.005        # Close if short put is 0.5% ITM with 0DTE
+
+  # ── Profit Taking ────────────────────────────────────────
+  profit_target_pct: 0.50              # 50% of max theoretical profit
+  scale_out_at_pct: [0.30, 0.50]
+  close_at_max_pain: true              # Close if/when price reaches max pain level
+
+  # ── Time-Based Exits (MANDATORY — enforced mechanically) ──
+  # These cannot be overridden by any signal or profitability
+  mandatory_reduce_minutes_before_close: 120    # 50% reduction at T-120 min
+  mandatory_close_minutes_before_close: 60      # 100% close at T-60 min
+  max_hold_days: 5                             # Never hold more than 5 days
+
+  # ── Assignment Risk ──────────────────────────────────────
+  monitor_itm_status: true
+  close_itm_short_put_daysTo_expiry: 0         # Same-day: close if short put goes ITM
+  avoid_assignment_threshold_pct: 0.002         # Close short put if within 0.2% ITM on expiry day
+
+circuit_breakers:
+  # ── Pin-Specific Triggers ─────────────────────────────────
+  consecutive_losses_halt: 3           # 3 losers → halt, strategy review
+  max_pain_accuracy_rate_halt: 0.35    # If < 35% pin rate this week → halt (strategy broken)
+  pin_evaluation_window: 10            # Evaluate last 10 trades
+
+  # Gamma emergency
+  gamma_emergency_halt: 300            # If portfolio gamma exceeds 300: emergency halt
+  charm_emergency_halt: 60             # Charm > 60: emergency halt
+
+  # ── Market-Wide ───────────────────────────────────────────
+  vix_halt_threshold: 30               # VIX > 30: no new pin trades (pin effect weakens)
+  vix_liquidate_threshold: 40
+  vix_intraday_spike_pct: 0.15         # VIX up > 15% intraday: halt (2+ point spike)
+  spy_intraday_move_pct: 0.015         # SPY moves > 1.5% intraday: halt pin trades
+  market_halt_detection: true
+
+  # ── System Health ─────────────────────────────────────────
+  max_latency_ms: 400                  # Time-critical near expiry
+  data_staleness_seconds: 5            # Fresh data critical for max pain calc
+  oi_data_staleness_minutes: 20        # OI data: 20 min max (updates less frequently)
+  max_api_error_rate: 0.03
+
+  # ── Recovery ─────────────────────────────────────────────
+  cooldown_after_halt_minutes: 30
+  manual_override_required: true
+  resume_only_after_review: true
+
+execution_risk:
+  max_order_size_contracts: 15
+  price_sanity_check_pct: 0.20
+  duplicate_order_check: true
+  fat_finger_protection: true
+
+  # Near-expiry specific
+  min_volume_for_entry: 100            # Near-expiry options need active volume
+  min_open_interest: 500
+  max_pct_of_adv: 0.08
+
+  # Assignment monitoring
+  check_assignment_notices: true       # Monitor broker for exercise notices
+  assignment_check_frequency_seconds: 60
