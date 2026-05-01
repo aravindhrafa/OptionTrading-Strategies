@@ -1,0 +1,185 @@
+# ============================================================
+# Term Structure Momentum — Risk Limits
+# ============================================================
+# These limits reflect the unique risk profile of volatility
+# term structure trades. Key differences from directional strategies:
+#
+#   VEGA is the primary risk (not delta)
+#     Calendar spreads have near-zero delta but significant vega.
+#     A vol spike affects both legs but NOT equally — the near
+#     leg is more sensitive. Net vega exposure drives P&L.
+#
+#   VOLGA (Vega of Vega) is the second-order risk
+#     Calendars have volga exposure: if vol moves A LOT, the
+#     vega itself changes. This creates convexity in the P&L.
+#     Must monitor volga, especially in high-VIX environments.
+#
+#   REALIZED VOL vs IMPLIED VOL
+#     If realized vol exceeds implied vol (all maturities),
+#     the carry signal breaks down and the P&L can be negative
+#     even with a correct term structure view.
+#
+#   LIQUIDITY RISK
+#     Calendar spread bid-asks are WIDER than single options.
+#     Transaction costs are a major edge killer for this strategy.
+#     Always calculate break-even vol move before entering.
+# ============================================================
+
+portfolio_risk:
+  # ── Capital Limits ──────────────────────────────────────
+  max_total_capital_at_risk_pct: 0.04     # 4% portfolio max (spreads have limited risk)
+  max_per_trade_capital_pct: 0.008        # 0.8% per calendar spread
+  max_concurrent_positions: 5            # Can run more — calendars are self-hedged
+
+  # Regime-adjusted limits (overridden by regime_classifier in real-time)
+  max_concurrent_high_vix: 2            # Max 2 positions when VIX > 20
+  max_concurrent_crisis: 0              # No positions when VIX > 35
+
+  # Correlation limits
+  max_same_underlying_positions: 2      # Max 2 calendars on same ticker
+  max_same_expiry_leg: 3               # Max 3 positions sharing same near-leg expiry
+
+  # ── Daily P&L Limits ────────────────────────────────────
+  daily_loss_limit_pct: 0.020          # -2%: full stop (vol can move fast)
+  daily_profit_target_pct: 0.05        # +5%: stop new trades (protect alpha)
+  trailing_drawdown_from_peak_pct: 0.025
+
+  # ── Weekly/Monthly ───────────────────────────────────────
+  weekly_loss_limit_pct: 0.05
+  monthly_loss_limit_pct: 0.10
+  max_consecutive_losing_weeks: 3      # 3 losing weeks → strategy review
+
+greeks_limits:
+  # ── VEGA — Primary Risk Driver ──────────────────────────
+  # Calendar spreads are NET VEGA trades.
+  # We want limited net vega exposure with high vega DIFFERENTIAL.
+
+  # Net portfolio vega limits
+  max_portfolio_vega_long: 2500        # Max $2,500 net long vega per 1% vol
+  max_portfolio_vega_short: -2500      # Max $2,500 net short vega per 1% vol
+  vega_warning_pct: 0.75               # Alert at 75% of limit
+  vega_hedge_threshold: 2000           # Hedge net vega if |vega| > $2,000
+
+  # Per-position vega limits
+  max_position_net_vega: 800           # Single calendar max net vega
+  max_position_gross_vega: 3000        # Gross vega (sum of both legs)
+
+  # ── DELTA — Should Be Near Zero ────────────────────────
+  # Calendars are delta-neutral by design, but delta drifts.
+  max_portfolio_delta: 50
+  delta_hedge_threshold: 20
+  delta_hedge_frequency_seconds: 180   # Every 3 minutes — less urgent than 0DTE
+
+  # ── GAMMA — Secondary Risk ─────────────────────────────
+  # Calendar gamma is low but nonzero. Near-leg adds positive gamma,
+  # far-leg adds negative gamma — net is usually small.
+  max_portfolio_gamma: 150
+  min_portfolio_gamma: -150
+
+  # ── THETA — Should Be Positive in Contango ─────────────
+  # In contango regime: short near-term vol → positive theta
+  # In backwardation: long near-term → negative theta (acceptable)
+  min_portfolio_theta_contango: 100    # Must collect theta in contango
+  max_portfolio_theta: 5000
+
+  # ── VOLGA (Vega Convexity) — Critical for Calendars ────
+  # Volga = d(Vega)/d(Vol) — how much does vega change as vol moves?
+  # High volga means: if vol moves a lot, our vega exposure changes a lot
+  # This is a second-order risk we MUST monitor
+  max_portfolio_volga: 500
+  min_portfolio_volga: -500
+  volga_warning_threshold: 350
+
+  # ── VANNA (dDelta/dVol) ─────────────────────────────────
+  max_portfolio_vanna: 300
+  min_portfolio_vanna: -300
+
+  # ── CHARM (dDelta/dTime) ─────────────────────────────────
+  # Less critical for multi-week calendars than 0DTE
+  max_portfolio_charm: 40
+  min_portfolio_charm: -40
+
+  # ── DV01 (Vol Term Structure Duration) ─────────────────
+  # Strategy-specific: sensitivity to 1bps parallel shift in slope
+  max_ts_dv01: 200                     # Max $200 per 1bps slope change
+  min_ts_dv01: -200
+
+per_trade_risk:
+  # ── Entry Filters ────────────────────────────────────────
+  min_edge_bps: 6                      # Min 6 bps net edge after costs
+  min_signal_confidence: 0.65
+  min_iv_rank: 20                      # IV Rank > 20 (vol must be measurable)
+  max_iv_rank_for_long_calendar: 70    # Don't buy long calendar in extreme high vol
+  min_carry_bps: 30                    # Min 30 bps carry to sell near-term
+
+  # Transaction cost break-even
+  max_bid_ask_cost_pct_of_edge: 0.40  # Bid-ask costs must be < 40% of expected edge
+
+  # ── Regime Filters ────────────────────────────────────────
+  max_vix_for_full_size: 22            # Full size only when VIX < 22
+  max_vix_for_half_size: 30            # Half size when VIX 22-30
+  max_vix_to_trade: 35                 # No new positions when VIX > 35
+
+  # Term structure quality filters
+  min_fit_r_squared: 0.88              # Term structure fit quality
+  max_term_structure_noise_pct: 0.03   # Max 3% noise in TS fit
+  min_signals_aligned: 2              # Need ≥ 2 signals in same direction
+
+  # ── Stop Loss ────────────────────────────────────────────
+  stop_loss_pct: 0.45                  # Exit at 45% loss of max theoretical risk
+  term_structure_reversal_stop: true   # Exit if term structure reverses > 1.5× entry signal
+  realized_vol_stop: true              # Exit if realized vol > implied (carry breakdown)
+  realized_vol_ratio_stop: 1.10       # Close if RV/IV > 1.10 (realized exceeds implied)
+
+  trailing_stop_from_peak_pct: 0.30   # Trail 30% from peak
+
+  # ── Profit Taking ─────────────────────────────────────────
+  profit_target_pct: 0.50             # 50% of max theoretical profit
+  scale_out_at_pct: [0.30, 0.50]
+  momentum_fade_close: true           # Close if momentum signal drops below 0.3
+
+  # ── Time-Based Exits ────────────────────────────────────
+  max_hold_days: 10                   # Never hold calendar spreads > 10 days
+  near_leg_dte_exit: 7               # Begin evaluating exit when near leg < 7 DTE
+  near_leg_force_exit_dte: 2         # Force exit/roll when near leg < 2 DTE
+
+circuit_breakers:
+  # ── Volatility Regime Triggers ───────────────────────────
+  vix_halt_threshold: 35             # VIX > 35: halt all new trades
+  vix_liquidate_threshold: 45        # VIX > 45: close all positions
+  vix_intraday_spike_halt_pts: 5     # VIX up > 5 points intraday: halt
+  vix_intraday_spike_liquidate_pts: 10  # VIX up > 10 points: emergency close
+
+  # ── Term Structure Signal Failure ────────────────────────
+  ts_autocorrelation_breakdown: 0.05  # If autocorrelation drops to 0.05: halt (edge gone)
+  slope_reversal_halt_sigma: 2.5      # If slope reverses > 2.5σ intraday: halt
+  consecutive_losses_halt: 4          # 4 consecutive losing trades: review
+  weekly_loss_rate_halt: 0.65         # >65% loss rate this week: halt
+
+  # ── Realized vs Implied Vol ───────────────────────────────
+  rv_iv_ratio_halt: 1.20             # If RV/IV > 1.20: term structure carry is broken
+  rv_measure_window_minutes: 30       # 30-min realized vol for real-time monitoring
+
+  # ── Liquidity ─────────────────────────────────────────────
+  max_bid_ask_widening_factor: 3.0    # If bid-ask > 3× normal: halt (liquidity gone)
+  min_combo_fill_rate: 0.70           # If < 70% combo orders fill: halt
+
+  # ── System Health ─────────────────────────────────────────
+  max_latency_ms: 1000               # More tolerant (not 0DTE speed)
+  iv_data_staleness_minutes: 5       # Fresh IV data required
+  ts_fit_failure_halt: true          # Halt if term structure fit fails 3× in a row
+
+  # ── Recovery ──────────────────────────────────────────────
+  cooldown_after_halt_minutes: 60
+  manual_override_required: true
+  resume_requires_regime_check: true  # Must verify regime before resuming
+
+execution_risk:
+  max_order_size_contracts: 20
+  price_sanity_check_pct: 0.15
+  duplicate_order_check: true
+  fat_finger_protection: true
+  min_combo_legs: 2                  # Calendar spreads must be submitted as combos
+  reject_single_leg_orders: true     # Never accept single-leg submissions (leg risk)
+  min_open_interest: 300
+  max_bid_ask_cost_absolute: 0.30    # Max $0.30 total round-trip bid-ask cost per spread

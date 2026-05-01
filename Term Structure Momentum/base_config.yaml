@@ -1,0 +1,251 @@
+# ============================================================
+# Term Structure Momentum — Base Configuration
+# ============================================================
+# Designed to Citadel/Tower Research standards.
+#
+# CORE PHILOSOPHY:
+#   This strategy trades the SHAPE of the volatility surface
+#   across time, not direction of the underlying. The edge is
+#   purely in volatility relative value — two options on the
+#   SAME underlying, same strike, different expiry.
+#
+#   Unlike directional strategies, the P&L here comes from:
+#     1. Mean reversion of the term structure slope
+#     2. Time decay differential between near/far legs
+#     3. Volatility carry (short overpriced near-term vol)
+#
+# REGIME DEPENDENCY:
+#   This strategy's edge is HIGHLY regime-dependent.
+#   The regime_classifier.py determines which signals to use
+#   and what size to trade in each environment.
+#   The regime config (regime_config.yaml) specifies per-regime
+#   parameters. Never disable the regime filter.
+# ============================================================
+
+strategy:
+  name: "Term_Structure_Momentum"
+  version: "1.0.0"
+  mode: "paper"       # Always start paper. Set "live" explicitly.
+
+  # Underlying universe
+  # Prioritize instruments with the most liquid options chains
+  # and the most reliable term structure signals
+  universe:
+    primary:              # Strongest signals, highest liquidity
+      - "SPX"             # Cash-settled, no assignment risk, highest OI
+      - "SPY"             # Liquid ETF, good for smaller accounts
+      - "QQQ"             # Tech-heavy, different term structure dynamics
+    secondary:            # Good signals, decent liquidity
+      - "IWM"             # Small-cap, useful for cross-asset ts comparison
+      - "GLD"             # Gold — different vol regime dynamics
+    vix_futures:          # For VIX futures term structure (advanced)
+      enabled: false      # Enable only if you have futures account
+      tickers: ["VX1", "VX2", "VX3", "VX4"]
+
+  session:
+    entry_start: "10:00"        # Skip first 30 min — vol surface still stabilizing
+    entry_cutoff: "15:00"       # No new entries last hour
+    hard_close_all: "15:30"     # Force close 30 min before close
+    timezone: "America/New_York"
+
+    # Liquidity windows (best execution quality)
+    optimal_entry_start: "10:30"
+    optimal_entry_end: "12:00"
+
+    # Event blackouts
+    news_blackout_minutes: 45
+    avoid_events:
+      - "FOMC"                  # Suspend pure momentum, allow kink arb
+      - "CPI"
+      - "NFP"
+      - "PCE"
+      - "VIX_EXPIRY"            # VIX futures expiry (mid-month Wednesday)
+
+    # VIX futures expiry creates artificial term structure distortions
+    vix_expiry_blackout_days: 2  # Suspend 2 days around VIX roll
+
+# ============================================================
+# TERM STRUCTURE CONSTRUCTION
+# ============================================================
+term_structure:
+  # DTE buckets for term structure (days to expiry)
+  dte_buckets: [7, 14, 21, 30, 45, 60, 90, 120, 180, 360]
+
+  # Minimum data requirements per bucket
+  min_oi_per_bucket: 500
+  min_strikes_per_bucket: 5      # Need spread of strikes for reliable ATM IV
+
+  # ATM IV calculation method
+  atm_iv_method: "interpolation"  # "interpolation" | "nearest_strike" | "svi_fit"
+  atm_delta_range: [0.45, 0.55]   # Delta range considered "ATM" for IV extraction
+
+  # Minimum data quality
+  max_bid_ask_spread_pct: 0.10    # Skip if option B-A > 10% of mid
+  min_volume_for_iv_calc: 5       # Need some volume for reliable IV
+
+  # Nelson-Siegel fitting parameters
+  fitting:
+    method: "nelson_siegel"       # "nelson_siegel" | "svi" | "polynomial"
+    min_r_squared: 0.90           # Minimum fit quality
+    max_residual_pct: 0.03        # Max 3% deviation at any bucket
+    fallback_to_raw: true         # Use raw IVs if fit fails
+
+# ============================================================
+# SIGNAL PARAMETERS
+# ============================================================
+signals:
+  slope_momentum:
+    # Slope calculation
+    slope_method: "nelson_siegel_beta1"  # Use Nelson-Siegel slope factor
+    # Alternative: simple OLS of IV on sqrt(DTE)
+
+    # Short/long DTE for slope calculation
+    near_dte: 30      # Short end of the slope
+    far_dte: 90       # Long end of the slope
+    # Slope = IV(near_dte) - IV(far_dte) × √(near_dte/far_dte)
+
+    # Momentum lookback
+    momentum_lookback_days: 5     # Compute slope change over last 5 days
+    ema_smoothing_period: 3       # EMA smoothing on slope changes
+
+    # Signal thresholds
+    min_slope_velocity: 0.002     # Min slope change per day to qualify (0.2% IV/day)
+    strong_slope_velocity: 0.005  # Strong signal: 0.5% IV/day change
+    acceleration_required: true   # Require non-negative acceleration
+
+    # Baseline calibration
+    slope_zscore_window: 63       # 63-day (3-month) rolling Z-score window
+    min_slope_zscore: 1.5         # Signal must be > 1.5σ from recent mean
+    strong_slope_zscore: 2.5      # Strong signal: > 2.5σ
+
+    # Statistical filters
+    min_autocorrelation: 0.12     # Require positive autocorrelation at lag-1
+    autocorrelation_window: 20    # Rolling window for autocorrelation estimate
+
+  carry:
+    # Volatility carry calculation
+    # Carry = IV(near) - IV(far) × √(near_DTE / far_DTE)
+    # Positive carry = short near-term is profitable on roll
+    near_dte: 30
+    far_dte: 90
+
+    # Carry thresholds
+    min_carry_bps: 50             # Min 50 bps carry to consider trade
+    strong_carry_bps: 120         # Strong carry: 120 bps+
+    carry_zscore_window: 63
+    min_carry_zscore: 1.0         # Carry signal: > 1σ from recent mean
+
+    # Realized vol comparison
+    realized_vol_window: 20       # 20-day realized vol
+    iv_rv_ratio_min: 1.15        # IV must be ≥ 15% above realized vol to short
+
+  curvature_kink:
+    # Kink detection (event premium in specific DTE bucket)
+    kink_detection_method: "butterfly"  # Measure curvature via DTE butterfly
+
+    # Kink thresholds
+    min_kink_magnitude_pct: 0.02        # Kink > 2% IV above smooth curve
+    strong_kink_magnitude_pct: 0.04     # Strong kink: > 4% deviation
+
+    # Event matching (is kink due to known event?)
+    match_events_within_days: 5         # Match kinks to events within 5 days
+    known_events: ["FOMC", "CPI", "NFP", "EARNINGS"]
+
+    # Propagation signal
+    min_kink_decay_rate: 0.005          # Kink shrinking by 0.5%/day → sell it
+
+  flow:
+    # Options flow signal (net vega demand)
+    measurement_window_minutes: 120     # Look at last 2 hours of flow
+    min_net_vega_for_signal: 50000      # $50K net vega in same direction
+    flow_zscore_threshold: 1.5
+
+    # Unusual OI buildup
+    oi_buildup_threshold_ratio: 1.5     # OI growing 1.5× faster than average at DTE bucket
+    oi_buildup_window_days: 5
+
+  composite:
+    # Signal weights (regime-adjusted in regime_config.yaml)
+    slope_momentum_weight: 0.40
+    carry_weight: 0.30
+    curvature_kink_weight: 0.20
+    flow_weight: 0.10
+
+    # Entry thresholds
+    min_composite_score: 0.65           # Minimum to enter
+    strong_signal_threshold: 0.80       # Above this: full size
+
+    # Multi-signal confirmation
+    require_momentum_positive: true     # Slope momentum must be non-zero
+    require_carry_positive: false       # Carry is optional confirmation
+    signals_required_to_trade: 2        # Need ≥ 2 signals aligned
+
+# ============================================================
+# TRADE STRUCTURE SELECTION
+# ============================================================
+trade_structure:
+  # Structure selection by regime
+  contango_steepening: "short_calendar"
+  backwardation_deepening: "long_calendar"
+  kink_propagation: "ts_butterfly"
+  flat_structure: "no_trade"
+
+  calendar:
+    # Leg selection
+    near_leg_dte_range: [14, 30]          # Near leg: 14-30 DTE
+    far_leg_dte_range: [45, 90]           # Far leg: 45-90 DTE
+    preferred_dte_ratio: 3.0              # Far DTE / Near DTE ≈ 3×
+
+    # Strike selection
+    strike_method: "atm_delta"            # Strike closest to 0.50 delta
+    atm_tolerance_delta: 0.05             # Accept strikes within Δ0.05 of ATM
+
+    # Spread requirements
+    min_vega_differential: 100            # Far leg vega - near leg vega > 100
+    max_net_delta: 0.10                   # Calendar should be near-delta-neutral
+
+    # Rolling rules
+    roll_near_leg_at_dte: 7              # Consider rolling when near leg hits 7 DTE
+    force_close_near_leg_at_dte: 2       # Force close when near leg hits 2 DTE
+
+  ts_butterfly:
+    # Three-leg butterfly on term structure
+    wing_1_dte: 30
+    body_dte: 45                          # The "kink" DTE
+    wing_2_dte: 60
+    # Body is 2× contracts: BUY 1 wing1, SELL 2 body, BUY 1 wing2
+
+  # Universal settings
+  min_open_interest: 300
+  max_bid_ask_spread_pct: 0.08
+  prefer_cash_settled: true              # SPX/XSP preferred (no assignment risk)
+
+# ============================================================
+# EXECUTION
+# ============================================================
+execution:
+  order_type: "limit_combo"             # Always combo orders for calendar spreads
+  limit_offset_bps: 0.3                 # Start close to theoretical value
+  max_aggression_bps: 2.0
+  retry_interval_seconds: 10            # Longer retry — calendar spreads need patience
+  max_retries: 4
+  cancel_unfilled_after: 60             # 60 seconds max per attempt
+
+  # TWAP for larger orders
+  use_twap: false                       # Enable for positions > 10 contracts
+  twap_duration_minutes: 15
+
+  # Optimal execution windows
+  prefer_morning_entry: true            # Best liquidity 10:30-12:00
+  avoid_macro_release_minutes: 15       # Don't enter within 15 min of data
+
+# ============================================================
+# LOGGING
+# ============================================================
+logging:
+  level: "INFO"
+  structured: true
+  log_dir: "logs/"
+  metrics_port: 9094
+  alert_webhook: ""
+  ts_snapshot_interval_minutes: 15      # Snapshot term structure every 15 min
